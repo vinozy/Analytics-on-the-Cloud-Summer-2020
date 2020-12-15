@@ -3,22 +3,29 @@ Assignments written in Scala Spark and PySpark for course IEOR E4526 Analytics o
 
 Topics
 - 1. The cloud:
-Basics
+Basics,
 
 Cloud storage, virtual machines, containers, parallelism
 - 2. Functional Programming:
 
-the map/reduce framework
+the map/reduce framework,
+
 functional programming in Scala
 - 3. Cluster computing
 
-Apache Spark and PySpark
-streaming (Spark Streaming/Kafka)
-distributed datasets and dataframes
-distributed graphs (GraphX)
-Spark ML 
-Spark SQL
+distributed datasets and dataframes,
+
+Spark SQL,
+
+distributed graphs (GraphX),
+
+Apache Spark and PySpark,
+
+streaming (Spark Streaming/Kafka),
+
 
 - 4. ML on the cloud
+
+Spark ML,
 
 ML applications on the cloud 
