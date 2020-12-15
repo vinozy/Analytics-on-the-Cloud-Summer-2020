@@ -1,0 +1,595 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h1>Evaluating a collaborative fitering model</h1>\n",
+    "In this assignment, we're going to evaluate our ALS model using the following idea:\n",
+    "<p>\n",
+    "    If the model is a good one, then it should give higher predictions for artists that a user has played than for artists the user has not played\n",
+    "    </p>\n",
+    "    <p>\n",
+    "    So, we'll divide our data into a training and testing set\n",
+    "    </p>\n",
+    "    <p>\n",
+    "    Train the model on the training set\n",
+    "    </p>\n",
+    "    <p>\n",
+    "    Then, in the testing set, get the predictions for the artists that each user has played\n",
+    "    </p>\n",
+    "    <p>\n",
+    "    And the predictions for an equal number of artists that the user has not played\n",
+    "    </p>\n",
+    "    <p>\n",
+    "    Join these two sets (each played prediction will be compared with each unplayed prediction)\n",
+    "    </p>\n",
+    "    <p>\n",
+    "    Calculate the number of times a played prediction > an unplayed prediction and divide by the total (played prediction, unplayed prediction) combinations (for each user)\n",
+    "    </p>\n",
+    "    <p>\n",
+    "    Calculate the average of these values over all users. This should be better than 50% and the higher the number, the better\n",
+    "    </p>\n",
+    "    <p>\n",
+    "    We'll call this metric <span style=\"color:blue\">accuracy</span> (technically, it is the average accuracy across all users)\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h1>Configure Spark</h1>"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "%%init_spark\n",
+    "launcher.num_executors = 4\n",
+    "launcher.executor_cores = 4\n",
+    "launcher.driver_memory = '10g'\n",
+    "launcher.executor_memory = '10g'\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h1>Read data and create a training and testing dataframe</h1>\n",
+    "<li>This is what we did in class so I've done it for you</li>\n",
+    "<li>Also created an ALS model and fitted it on the training data</li>"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "Intitializing Scala interpreter ..."
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "text/plain": [
+       "Spark Web UI available at http://192.168.7.214:4041\n",
+       "SparkContext available as 'sc' (version = 2.4.4, master = local[*], app id = local-1588607303105)\n",
+       "SparkSession available as 'spark'\n"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    },
+    {
+     "data": {
+      "text/plain": [
+       "import org.apache.spark.sql.types._\n",
+       "import org.apache.spark.sql.Row\n",
+       "data_file: org.apache.spark.rdd.RDD[String] = ../class 11/lastfm-dataset-360K/usersha1-profile.tsv MapPartitionsRDD[1] at textFile at <console>:27\n",
+       "user_data: org.apache.spark.rdd.RDD[String] = PartitionwiseSampledRDD[2] at sample at <console>:28\n",
+       "user_key_map: scala.collection.Map[String,Int] = Map(6ff29d8fec1d97e04e950ccd1e1c853dee9f5ad5 -> 15876, 8e6af18c39b024025a4aefd64ebcf05dd45b7c6f -> 1945, b1b13addc2bf5918a1fa8a117ba6232f47cc2a3e -> 6925, 778a3b0e2312c7efbc87daa80ad5f4ca072f4f49 -> 16912, e0cab2dd54549bc9050e2e2954d7191f2d4d782f -> 13459, 972599142e08fe118319e7fcbc4a264d7e044fb4 -> 3181, a11368f80a696689ad5075ca4a23dde1a9545ad0 -> 4567, 38604f8ff08e6463a9761b7a5464fb99adf8a16d -> 7850, 171edc38d8d58428bf7620c49a0..."
+      ]
+     },
+     "execution_count": 2,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "import org.apache.spark.sql.types._\n",
+    "import org.apache.spark.sql.Row\n",
+    "val data_file = sc.textFile(\"../class 11/lastfm-dataset-360K/usersha1-profile.tsv\")\n",
+    "val user_data = data_file.sample(false,0.05,42)\n",
+    "val user_key_map = user_data\n",
+    "    .map(l => l.split(\"\\t\"))\n",
+    "    .map(a => a(0))\n",
+    "    .zipWithUniqueId\n",
+    "    .map(t => (t._1,t._2.toInt))\n",
+    "    .collectAsMap()\n",
+    "val fields = Array(StructField(\"user\",IntegerType,nullable=false),\n",
+    "                  StructField(\"gender\",StringType,nullable=false),\n",
+    "                   StructField(\"age\",StringType,nullable=false),\n",
+    "                  StructField(\"country\",StringType,nullable=false),\n",
+    "                  StructField(\"signupdate\",StringType,nullable=false))\n",
+    "val schema = StructType(fields)\n",
+    "val user_data1 = user_data.map(l => l.split(\"\\t\"))\n",
+    ".map {\n",
+    "    l => {\n",
+    "        val long_id = user_key_map get l(0)\n",
+    "        Row(long_id.get,l(1),l(2),l(3),l(4))\n",
+    "    }\n",
+    "}\n",
+    "val user_df = spark.createDataFrame(user_data1,schema)\n",
+    "\n",
+    "val data = sc.textFile(\"../class 11/lastfm-dataset-360K/usersha1-artmbid-artname-plays.tsv\")\n",
+    "val data1 = data.map(l=>l.split(\"\\t\"))\n",
+    "    .map(a => (a(1),a(2)))\n",
+    "    .reduceByKey((v1, v2) => v1)\n",
+    "\n",
+    "val artist_key_map = data1.map(r=> r._1)\n",
+    "    .zipWithUniqueId\n",
+    "    .map(t => (t._1,t._2.toInt))\n",
+    "    .collectAsMap\n",
+    "\n",
+    "val artist_fields = Array(StructField(\"artist_id\",IntegerType,nullable=false),\n",
+    "                  StructField(\"artist_name\",StringType,nullable=false))\n",
+    "\n",
+    "val artist_schema = StructType(artist_fields)\n",
+    "\n",
+    "val artist_df = spark.createDataFrame(data1\n",
+    ".map {\n",
+    "    l => {\n",
+    "        val long_id = artist_key_map get l._1\n",
+    "        Row(long_id.get,l._2)\n",
+    "    }\n",
+    "},artist_schema)\n",
+    "\n",
+    "def artist_lookup(id: Integer) = {\n",
+    "    artist_df.filter($\"artist_id\"===id).rdd.first.toSeq(1).toString\n",
+    "}\n",
+    "val play_fields = Array(StructField(\"user\",IntegerType,nullable=false),\n",
+    "                  StructField(\"artist_id\",IntegerType,nullable=false),\n",
+    "                   StructField(\"plays\",IntegerType,nullable=false))\n",
+    "\n",
+    "val play_schema = StructType(play_fields)\n",
+    "\n",
+    "val plays_rdd = data.map(l => l.split(\"\\t\"))\n",
+    "    .map {\n",
+    "        l => {\n",
+    "            val user_id = user_key_map.getOrElse(l(0),-1)\n",
+    "            val artist_id = artist_key_map.getOrElse(l(1),-1)\n",
+    "            val plays = l(3).replaceAll(\"^\\\\s+\", \"\").toInt\n",
+    "            Row(user_id,artist_id,plays)\n",
+    "        }\n",
+    "\n",
+    "}\n",
+    "\n",
+    "val plays_df = spark.createDataFrame(plays_rdd.filter(r => r(0) != -1),play_schema)\n",
+    "\n",
+    "import org.apache.spark.ml.recommendation._\n",
+    "import scala.util.Random\n",
+    "val split_data = plays_df.randomSplit(Array(0.7,0.3),20)\n",
+    "val train_df = split_data(0).toDF\n",
+    "val test_df = split_data(1).toDF\n",
+    "\n",
+    "val als = new ALS().\n",
+    "        setSeed(Random.nextLong()).\n",
+    "        setImplicitPrefs(true).\n",
+    "        setRank(5).setRegParam(1.0).\n",
+    "        setAlpha(1.0).setMaxIter(20).\n",
+    "        setUserCol(\"user\").setItemCol(\"artist_id\").\n",
+    "        setRatingCol(\"plays\").setPredictionCol(\"prediction\")\n",
+    "\n",
+    "val model = als.fit(train_df)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h1>Extract played predictions</h1>\n",
+    "<li>The artist plays in the test set are the played predictions. I.e., we know that the user likes these artists because he/she has played them before</li>\n",
+    "<li>The data frame should have three columns \"user\", \"artist_id\" and \"played\". \"user\" contains the user id;  \"artist_id\" the artist id; and \"played\" the loading given to the user, artist combination</li>\n",
+    "<li>Note that you'll need to use <span style=\"color:blue\">model.transfrom</span> for this</li>"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "played_predictions: org.apache.spark.sql.DataFrame = [user: int, artist_id: int ... 1 more field]\n"
+      ]
+     },
+     "execution_count": 3,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "val played_predictions = model\n",
+    "    .transform(test_df.select(\"user\",\"artist_id\"))\n",
+    "    .withColumnRenamed(\"prediction\",\"played\")\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h1>Extract predictions on unplayed artists</h1>\n",
+    "<li>Let's say we have 10 \"played\" artists for user 11 in test_df</li>\n",
+    "<li>We need to create a parallel list of 10 \"unplayed\" artists for user 11 in test_df</li>\n",
+    "<li>I.e., we will pick 10 artists that are not in the users test_df played set</li>\n",
+    "<li>And then create predictions (the loadings) for these 10 artists</li>\n",
+    "<li>Note that if the user has played more than 50% of all artists, the unplayed set will be smaller than the played set</li>"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h3>broadcast</h3>\n",
+    "<li>The <span style=\"color:blue\">broadcast</span> function broadcasts an array to every node in a cluster</li>\n",
+    "<li>This ensures that each node has its own copy and does not need to look for parts of the array on other nodes</li>\n",
+    "<li>Typically, this is used when you need to constantly refer to a list of some sort</li>\n",
+    "<li>In our case, we'll need a master list of all artist ids to compare against the list of artists that the user has played, so we should broadcast this</li>"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "allArtists: Array[Int] = Array(97564, 13285, 133153, 14832, 94819, 133524, 117994, 135867, 48254, 68579, 110904, 65408, 89863, 108560, 120899, 150822, 107536, 93319, 146036, 141449, 32445, 92188, 143432, 158339, 24663, 143153, 81410, 42468, 12027, 1829, 10623, 49308, 7880, 79220, 129345, 156366, 139128, 51393, 15957, 43935, 145011, 91785, 150087, 100884, 140541, 145210, 28577, 152600, 9376, 74904, 35689, 133577, 133590, 34759, 130062, 153409, 140081, 102793, 139024, 28836, 72578, 29194, 154034, 92834, 79361, 63155, 134748, 7993, 142084, 156363, 31528, 57178, 115741, 19530, 111381, 145203, 6336, 156365, 126373, 43714, 6620, 109909, 150604, 100800, 57984, 833, 128367, 64628, 34239, 150383, 133730, 134205, 83861, 69637, 42635, 156941, 150843, 56680, 144991, 94950, 96044, 41751, 149761, 465..."
+      ]
+     },
+     "execution_count": 4,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "val allArtists = plays_df.select(\"artist_id\").as[Int].distinct().collect()\n",
+    "val bAllArtists = spark.sparkContext.broadcast(allArtists)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h3>flatMapGroups</h3>\n",
+    "<li><a href=\"https://spark.apache.org/docs/latest/api/java/org/apache/spark/sql/KeyValueGroupedDataset.html#flatMapGroups-org.apache.spark.api.java.function.FlatMapGroupsFunction-org.apache.spark.sql.Encoder-\">flatMapGroups</a> is a function on Data Sets (not DataFrames or RDDs!) that applies a function to each group in a grouped dataset</li>\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h2>Extracting \"unplayed\" predictions</h2>\n",
+    "You can use any method you like but you should end up with a DataFrame of two columns (user_id, artist_id). The outline in the next cell uses the following procedure but ignore it and do whatever makes more sense to you!\n",
+    "<p>\n",
+    "\n",
+    "<li>To extract the \"unplayed\" predictions, do the following:</li>\n",
+    "<ol>\n",
+    "    <li>create a dataset that has user,artist pairs</li>\n",
+    "    <li>use groupByKey to group this by user</li>\n",
+    "    <li>call flatMapGroups on this</li>\n",
+    "    <li>for each group (i.e., user. note that each item passed to the map in flatMapGroups will be of the form (user_id -> ((user_id,artist_id),(user_id,artist_id),....)):</li>\n",
+    "    <ol>\n",
+    "        <li>extract the set of artists (use a map to get the artist_ids and use .toSet on the result of the map to make a set)</li>\n",
+    "        <li>create a new ArrayBuffer object to hold the n unplayed artist ids (an ArrayBuffer object is mutable)</li>\n",
+    "        <li>get all artists from the broadcast array</li>\n",
+    "        <li>if there are n artists in this array, we want to pick either n artists or the length of the played array, whichever is the lesser. So, use a while loop that starts with i=0, picks a random artist, adds it to the ArrayBuffer object, increments i by 1 and ends when either we've got enough artists</li>\n",
+    "        <li>return a set with (user_id, artist_id) pairs for the artists in this ArrayBuffer (use a map to create these pairs)</li>\n",
+    "    </ol>\n",
+    "    <li>flatMapGroup will process each group and then flatten the result, so you'll get a DataSet that contains (user_id,artist_id) pairs</li>\n",
+    "    <li>Convert this DataSet into a DataFrame of two columns</li>\n",
+    "        \n",
+    "        \n",
+    "            "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "import scala.collection.mutable.ArrayBuffer\n",
+       "import scala.util.Random\n",
+       "unplayed: org.apache.spark.sql.DataFrame = [user: int, artist_id: int]\n"
+      ]
+     },
+     "execution_count": 5,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "import scala.collection.mutable.ArrayBuffer\n",
+    "import scala.util.Random\n",
+    "\n",
+    "\n",
+    "val unplayed = test_df.select(\"user\", \"artist_id\").as[(Int,Int)].\n",
+    "      groupByKey { case (user, _) => user }.\n",
+    "      flatMapGroups { case (userID, user_artist_tuples) =>\n",
+    "        val random = new Random()\n",
+    "          //Set of all artists for this user that are in the test data set\n",
+    "        val played_set = user_artist_tuples.map { case (_, artist) => artist }.toSet\n",
+    "          //place holder mutable array for the artists that are not in the test set for this user\n",
+    "        val unplayed = new ArrayBuffer[Int]()\n",
+    "          //grab artist ids from the broadcast array\n",
+    "        val allArtists = bAllArtists.value\n",
+    "        var i = 0\n",
+    "        // Iterate over all artists until we have enough \"negative\" artists\n",
+    "          //randomly picking artists from the set of all artists\n",
+    "          //as long as the artist is not in the positive artists set\n",
+    "          \n",
+    "        while (i < allArtists.length && unplayed.size < played_set.size) {\n",
+    "          val artistID = allArtists(random.nextInt(allArtists.length))\n",
+    "          // Only add new distinct IDs\n",
+    "          if (!played_set.contains(artistID)) {\n",
+    "            unplayed += artistID\n",
+    "          }\n",
+    "          i += 1\n",
+    "        }\n",
+    "        // Return the set with user ID added back\n",
+    "        unplayed.map(artistID => (userID, artistID))\n",
+    "      }.toDF(\"user\",\"artist_id\")\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h1>Get the predicted loadings for the \"unplayed\" (user,artist) data</h1>\n",
+    "<li>Rename the predictions column to \"unplayed\"</li>"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "unplayed_predictions: org.apache.spark.sql.DataFrame = [user: int, artist_id: int ... 1 more field]\n"
+      ]
+     },
+     "execution_count": 6,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "val unplayed_predictions = model.transform(unplayed).\n",
+    "      withColumnRenamed(\"prediction\", \"unplayed\")"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h1>Evaluate the model</h1>\n",
+    "<li>Calculate accuracy</li>"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "import org.apache.spark.sql.DataFrame\n",
+       "accuracy: (played_predictions: org.apache.spark.sql.DataFrame, unplayed_predictions: org.apache.spark.sql.DataFrame)Double\n"
+      ]
+     },
+     "execution_count": 7,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "import org.apache.spark.sql.DataFrame\n",
+    "def accuracy(played_predictions: DataFrame,unplayed_predictions: DataFrame): Double = {\n",
+    "\n",
+    "\n",
+    "\n",
+    "    // Join played predictions to unplayed predictions by user.\n",
+    "    // This will result in a row for every possible pairing of played and unplayed\n",
+    "    // predictions within each user.\n",
+    "    val joined = played_predictions.join(unplayed_predictions, \"user\")\n",
+    "        .select(\"user\", \"played\", \"unplayed\")\n",
+    "        .cache()\n",
+    "\n",
+    "    // Count the number of pairs per user. In a perfect model, this should total the number of pairs\n",
+    "    val totals = joined\n",
+    "        .groupBy(\"user\")\n",
+    "        .agg(count(lit(\"1\")).as(\"total\"))\n",
+    "        .select(\"user\", \"total\")\n",
+    "    \n",
+    "    // Count the number of pairs for each user where played prediction > unplayed prediction\n",
+    "    val model_counts = joined\n",
+    "        .filter($\"played\" > $\"unplayed\")\n",
+    "        .groupBy(\"user\")\n",
+    "        .agg(count(\"user\").as(\"model\"))\n",
+    "        .select(\"user\", \"model\")\n",
+    "\n",
+    "    // Combine these, compute their ratio, and average over all users\n",
+    "    val accuracy = totals\n",
+    "                    .join(model_counts, Seq(\"user\"), \"left_outer\")\n",
+    "                    .select($\"user\", (coalesce($\"model\", lit(0)) / $\"total\").as(\"acc\"))\n",
+    "                    .agg(mean(\"acc\"))\n",
+    "                    .as[Double]\n",
+    "                    .first()\n",
+    "\n",
+    "    joined.unpersist()\n",
+    "\n",
+    "    accuracy\n",
+    "  }\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "res0: Double = 0.8139504014789021\n"
+      ]
+     },
+     "execution_count": 8,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "accuracy(played_predictions,unplayed_predictions)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<h1>Tune the model parameters using grid search</h1>"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 19,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "import org.apache.spark.ml.recommendation._\n",
+       "import scala.util.Random\n",
+       "import scala.collection.mutable.ArrayBuffer\n",
+       "unplayed: org.apache.spark.sql.DataFrame = [user: int, artist_id: int]\n",
+       "evaluations: Seq[(Double, (Int, Double, Double))] = List((0.8133508696288466,(5,0.01,1.0)), (0.8126540419958646,(5,0.01,10.0)), (0.8131559686893157,(5,1.0,1.0)), (0.8177653645251387,(5,1.0,10.0)), (0.8224748744414134,(10,0.01,1.0)), (0.8244080234966058,(10,0.01,10.0)), (0.8228561560836951,(10,1.0,1.0)), (0.8254413267658274,(10,1.0,10.0)))\n"
+      ]
+     },
+     "execution_count": 19,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "import org.apache.spark.ml.recommendation._\n",
+    "import scala.util.Random\n",
+    "\n",
+    "import scala.collection.mutable.ArrayBuffer\n",
+    "\n",
+    "\n",
+    "val unplayed = test_df.select(\"user\", \"artist_id\").as[(Int,Int)].\n",
+    "      groupByKey { case (user, _) => user }.\n",
+    "      flatMapGroups { case (userID, user_artist_tuples) =>\n",
+    "        val random = new Random()\n",
+    "          //Set of all artists for this user that are in the test data set\n",
+    "        val played_set = user_artist_tuples.map { case (_, artist) => artist }.toSet\n",
+    "          //place holder mutable array for the artists that are not in the test set for this user\n",
+    "        val unplayed = new ArrayBuffer[Int]()\n",
+    "          //grab artist ids from the broadcast array\n",
+    "        val allArtists = bAllArtists.value\n",
+    "        var i = 0\n",
+    "        // Iterate over all artists until we have enough \"negative\" artists\n",
+    "          //randomly picking artists from the set of all artists\n",
+    "          //as long as the artist is not in the positive artists set\n",
+    "          \n",
+    "        while (i < allArtists.length && unplayed.size < played_set.size) {\n",
+    "          val artistID = allArtists(random.nextInt(allArtists.length))\n",
+    "          // Only add new distinct IDs\n",
+    "          if (!played_set.contains(artistID)) {\n",
+    "            unplayed += artistID\n",
+    "          }\n",
+    "          i += 1\n",
+    "        }\n",
+    "        // Return the set with user ID added back\n",
+    "        unplayed.map(artistID => (userID, artistID))\n",
+    "      }.toDF(\"user\",\"artist_id\")\n",
+    "\n",
+    "val evaluations = for (rank     <- Seq(5,10); \n",
+    "                       regParam <- Seq(.01,1.0); \n",
+    "                       alpha    <- Seq(1.0,10.0))\n",
+    "    yield {\n",
+    "        val model = new ALS().\n",
+    "            setSeed(Random.nextLong()).\n",
+    "            setImplicitPrefs(true).\n",
+    "            setRank(rank).setRegParam(regParam).\n",
+    "            setAlpha(alpha).setMaxIter(20).\n",
+    "            setUserCol(\"user\").setItemCol(\"artist_id\").\n",
+    "            setRatingCol(\"plays\").setPredictionCol(\"prediction\").\n",
+    "            fit(train_df)\n",
+    "        val played_predictions = model\n",
+    "            .transform(test_df.select(\"user\",\"artist_id\"))\n",
+    "            .withColumnRenamed(\"prediction\",\"played\")\n",
+    "        val unplayed_predictions = model.transform(unplayed)\n",
+    "            .withColumnRenamed(\"prediction\", \"unplayed\")\n",
+    "        val acc = accuracy(played_predictions,unplayed_predictions)\n",
+    "\n",
+    "      (acc, (rank, regParam, alpha))\n",
+    "    }"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "spylon-kernel",
+   "language": "scala",
+   "name": "spylon-kernel"
+  },
+  "language_info": {
+   "codemirror_mode": "text/x-scala",
+   "file_extension": ".scala",
+   "help_links": [
+    {
+     "text": "MetaKernel Magics",
+     "url": "https://metakernel.readthedocs.io/en/latest/source/README.html"
+    }
+   ],
+   "mimetype": "text/x-scala",
+   "name": "scala",
+   "pygments_lexer": "scala",
+   "version": "0.4.1"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
